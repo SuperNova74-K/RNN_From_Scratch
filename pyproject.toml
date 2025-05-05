@@ -5,8 +5,30 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastrlock>=0.8.3",
+    "filelock==3.13.1",
+    "fsspec==2024.6.1",
     "jupyter>=1.1.1",
+    "mpmath==1.3.0",
+    "networkx==3.3",
     "notebook>=7.4.1",
+    "numpy==2.1.2",
+    "pillow==11.0.0",
     "setuptools>=80.1.0",
+    "sympy==1.13.3",
+    "torch>=2.7.0",
+    "torchaudio>=2.7.0",
+    "torchvision>=0.22.0",
     "tqdm>=4.67.1",
+    "wikipedia==1.4.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
