@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 class RNN():
     def __init__(self, input_size, hidden_size, output_size,
@@ -29,9 +30,9 @@ class RNN():
             one_hot = self.one_hot
 
         if one_hot:
-            vector = torch.zeros(self.input_size)
+            vector = torch.zeros(self.input_size, device=self.device)
             vector[index] = 1.0
-            return vector.to(self.device)
+            return vector
 
         return self.index_to_embedding[index].to(self.device)
 
@@ -78,59 +79,58 @@ class RNN():
                 else:
                     output_idx = torch.multinomial(probabilities, 1).item()
                 
-                generated.append(output_idx)
                 if output_idx == self.eos_index:
                     break
+
+                generated.append(output_idx)
                 
-        return [self.index_to_token[idx] for idx in generated]
+
+        output_sequence = [self.index_to_token[idx] for idx in generated]
+        return "".join(output_sequence)
         
     
-    def train(self, sequences, epochs, checkpoints=[], deterministic=False):
-        for epoch in range(epochs):
+    def train(self, sequences, epochs, checkpoints=[], learning_rate=0.01, max_grad_norm=5.0):
+        for epoch in tqdm(range(epochs), desc="Epoch", position=0):
             epoch_loss = 0
-
-            for sequence in sequences:
-                hidden_state = self.get_fresh_hidden_state().to(self.device)
+            
+            for sequence in tqdm(sequences, desc="sequence", position=1, leave=False):
+                hidden_state = self.get_fresh_hidden_state()
                 sequence_loss = 0
 
+                # Forward pass through entire sequence
                 for i in range(len(sequence) - 1):
-                    token_index = sequence[i]
-
-                    token = self.embed(token_index)
-
+                    token = self.embed(sequence[i])
                     output_logits, hidden_state = self.forward(token, hidden_state)
-
-                    # loss
                     probabilities = torch.softmax(output_logits, dim=0)
-                                       
-                    ground_truth_index = sequence[i + 1]
+                    target_index = sequence[i + 1]
+                    
+                    # Accumulate loss
+                    sequence_loss += -torch.log(probabilities[target_index] + 1e-9)
 
-                    step_loss = -torch.log(probabilities[ground_truth_index] + 1e-9) # epsilon for numerical stability
-                    sequence_loss += step_loss
+                # Calculate gradients after full sequence
+                params = [self.wxh, self.whh, self.why, self.bh, self.hy]
+                grads = torch.autograd.grad(sequence_loss, params, retain_graph=False)
 
-                    # gradient calculations
-                    params = [self.wxh, self.whh, self.why, self.bh, self.hy]
+                # Global gradient clipping
+                total_norm = torch.sqrt(sum(torch.sum(grad**2) for grad in grads if grad is not None))
+                if total_norm > max_grad_norm:
+                    clip_coef = max_grad_norm / (total_norm + 1e-6)
+                    grads = [grad * clip_coef if grad is not None else None for grad in grads]
 
-                    grads = torch.autograd.grad(step_loss, params, retain_graph=True, allow_unused=True)
-
-                    learning_rate = 0.01
-                    max_grad_norm = 5.0
-
-                    with torch.no_grad():
-                        # Optional gradient clipping
-                        for j, grad in enumerate(grads):
-                            if grad is not None:
-                                if torch.norm(grad) > max_grad_norm:
-                                    grads[j] = grad * max_grad_norm / torch.norm(grad)
-                        
-                        # Update parameters
-                        for param, grad in zip(params, grads):
-                            if grad is not None:
-                                param -= learning_rate * grad
+                # Parameter update
+                with torch.no_grad():
+                    for param, grad in zip(params, grads):
+                        if grad is not None:
+                            param -= learning_rate * grad
 
                 epoch_loss += sequence_loss.item()
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss / len(sequences)}")
+
+            # Epoch statistics
+            avg_loss = epoch_loss / len(sequences)
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
 
             if (epoch + 1) in checkpoints:
                 print(f"checkpoint at epoch {epoch + 1}")
                 checkpoints.append(self)
+        
+        return checkpoints.append(self)
