@@ -1,6 +1,44 @@
 import torch
 from tqdm import tqdm
 
+'''
+The following are the shapes for everything
+B = number of batches (i.e. number of sub-sequences)
+I = input size (i.e. can be vocab size if one hot or embedding size if using word embedding)
+BLength / S / sequence_length = the length of the single sub-sequence
+
+H = embedding size the higher the more learnable parameters there is
+Y / O / T = all the same but different names for contexts, it's basically output size which is always equal to vocab size
+
+Wxh = (I, H) # weights to transform input token into a hidden_state
+Whh = (H, H) # weights to turn the old hidden state into new hidden state (embedding the new token in the old memory)
+Why = (H, Y) # weights to turn the new hidden state (containting old and new tokens) into output prediction for the next token
+
+Example to understand batches: if your data is
+
+data = [
+    [0, 1, 3, 5, 6 , 7], # wikipedia article #1 tokenized in global token index (token2index dictionary used for tokenization)
+    [3, 6, 8, 8] # second article and so on
+]
+
+data[0] is called a sequence
+if you have batch size equal to 2 then X for the first sequence (article) is going to be:
+X = 
+[
+    [0, 1, 3], # sub-sequence #1 of the sequence (article) 1, sorry for your brain bud, I had to look at 5 worse codes than this to understand and write it myself.
+    [5, 6, 6]
+]
+
+then you take that last matrix and replace each element with the one-hot / embedding for it, turning this 2d matrix into 3d matrix,
+
+basically imagine if there is # of (vocab_size / embedding size) layers of this matrix to represent the input as it's embedding
+not as it's index ... got me ? I'm sure not, these stuff are brain-twisting, I'm not even writing this for you, I'm writing for me
+to help myself keep my sanity by teaching what I'm learning.
+
+hidden state will have the shape of (B, H)
+'''
+
+
 class RNN():
     def __init__(self, input_size, hidden_size, output_size,
                  token_to_index, index_to_token, index_to_embedding,
@@ -11,9 +49,11 @@ class RNN():
         self.hidden_size = hidden_size
         self.output_size = output_size
 
-        self.wxh = torch.rand(hidden_size, input_size, requires_grad=True).to(self.device)  * 0.01
-        self.whh = torch.rand(hidden_size, hidden_size, requires_grad=True).to(self.device) * 0.01
-        self.why = torch.rand(output_size, hidden_size, requires_grad=True).to(self.device) * 0.01
+        scale = 0.01
+
+        self.wxh = torch.rand(input_size, hidden_size, requires_grad=True).to(self.device)  * scale
+        self.whh = torch.rand(hidden_size, hidden_size, requires_grad=True).to(self.device) * scale
+        self.why = torch.rand(hidden_size, output_size, requires_grad=True).to(self.device) * scale
 
         self.bh = torch.rand(hidden_size, requires_grad=True).to(self.device)
         self.hy = torch.rand(output_size, requires_grad=True).to(self.device)
@@ -36,14 +76,14 @@ class RNN():
 
         return self.index_to_embedding[index].to(self.device)
 
-    def forward(self, input_embedding, hidden_state):
+    def forward(self, x_t, hidden_state):
         new_hidden_state = torch.tanh(
-            self.wxh @ input_embedding + 
-            self.whh @ hidden_state    +
+            x_t @ self.wxh + 
+            hidden_state @ self.whh    +
             self.bh
         ).to(self.device)
 
-        output_logits = (self.why @ new_hidden_state + self.hy).to(self.device)
+        output_logits = (new_hidden_state @ self.why + self.hy).to(self.device)
 
         return output_logits, new_hidden_state
     
@@ -59,11 +99,10 @@ class RNN():
             
             return hidden_state
 
-    def get_fresh_hidden_state(self):
-        return torch.zeros(self.hidden_size, requires_grad=True).to(self.device)
+    def get_fresh_hidden_state(self, n_batches):
+        return torch.zeros(n_batches, self.hidden_size, requires_grad=True).to(self.device)
     
     def sample(self, sequence, max_length=2000, deterministic=False):
-    # Use copy to avoid modifying input
         generated = list(sequence)
         hidden_state = self.sequence_to_hidden(generated)
         
@@ -89,39 +128,63 @@ class RNN():
         return "".join(output_sequence)
         
     
-    def train(self, sequences, epochs, checkpoints=[], learning_rate=0.01, max_grad_norm=5.0):
+    def train(self, sequences, epochs, checkpoints=[], batch_size=1, learning_rate=0.01, max_grad_norm=5.0):
         for epoch in tqdm(range(epochs), desc="Epoch", position=0):
             epoch_loss = 0
             
             for sequence in tqdm(sequences, desc="sequence", position=1, leave=False):
-                hidden_state = self.get_fresh_hidden_state()
+                
+                hidden_state = self.get_fresh_hidden_state(n_batches=batch_size)
+                
                 sequence_loss = 0
 
-                # Forward pass through entire sequence
-                for i in range(len(sequence) - 1):
-                    token = self.embed(sequence[i])
-                    output_logits, hidden_state = self.forward(token, hidden_state)
-                    probabilities = torch.softmax(output_logits, dim=0)
-                    target_index = sequence[i + 1]
-                    
-                    # Accumulate loss
-                    sequence_loss += -torch.log(probabilities[target_index] + 1e-9)
+                subsequence_length = len(20)
+                subsequences_start_indexes = range(0, len(sequence) - subsequence_length + 1, subsequence_length)
+                subsequences = [sequence[i][i + subsequence_length] for i in subsequences_start_indexes]
+                for sequence_index, subsequence in enumerate(subsequences):
+                    X = torch.zeros(batch_size, subsequence_length, self.input_size, device=self.device)
 
-                # Calculate gradients after full sequence
-                params = [self.wxh, self.whh, self.why, self.bh, self.hy]
-                grads = torch.autograd.grad(sequence_loss, params, retain_graph=False)
+                    for token_index in range(subsequence_length):
+                        
+                        # current_token_index_in_subsequence = sub_sequences_start_index + token_index
+                        # next_token_index_in_subsequence = current_token_index_in_subsequence + 1
 
-                # Global gradient clipping
-                total_norm = torch.sqrt(sum(torch.sum(grad**2) for grad in grads if grad is not None))
-                if total_norm > max_grad_norm:
-                    clip_coef = max_grad_norm / (total_norm + 1e-6)
-                    grads = [grad * clip_coef if grad is not None else None for grad in grads]
+                        # if next_token_index_in_subsequence >= len(sequence):
+                        #     break
 
-                # Parameter update
-                with torch.no_grad():
-                    for param, grad in zip(params, grads):
-                        if grad is not None:
-                            param -= learning_rate * grad
+                        # current_token_global_onehot_index = sequence[current_token_index_in_subsequence]
+                        # next_token_global_onehot_index = sequence[next_token_index_in_subsequence]
+
+                        X[sequence_index, token_index, token] = 1.0
+                        
+
+                        for t in range(subsequence_length):
+                            # ()
+                            x_t = X[t]
+                            
+                            # (B, I) ,,,,,, (B, H)
+                            output_logits, hidden_state = self.forward(x_t, hidden_state)
+                            
+                            # (B, I)
+                            probabilities = torch.softmax(output_logits, dim=1)
+
+                            loss = torch.mean(
+                                -torch.log(
+                                    probabilities[] + 1e-9
+                                )
+                            )
+
+
+
+                    # Forward pass through entire sequence
+                    for i in range(len(sequence) - 1):
+                        token = self.embed(sequence[i])
+                        output_logits, hidden_state = self.forward(token, hidden_state)
+                        probabilities = torch.softmax(output_logits, dim=0)
+                        target_index = sequence[i + 1]
+                        
+                        # Accumulate loss
+                        sequence_loss += -torch.log(probabilities[target_index] + 1e-9)
 
                 epoch_loss += sequence_loss.item()
 
