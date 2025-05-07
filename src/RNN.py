@@ -254,6 +254,9 @@ class RNN():
                             Y[time_step - 1][sub_sequence_index] = self.embed(element, one_hot=True)
 
 
+                self.optimizer.zero_grad()
+                batch_cumulative_loss = 0
+
                 # --- training steps ---
                 for i in range(sub_sequence_length-1): # recall that the last step in the subsequence has no ground truth (no next token!) so we don't train on it, TODO: use different Y technique to not waste training data
                     # (B, H)
@@ -270,18 +273,18 @@ class RNN():
                     # (B, O) shape didn't change, only each column is softmaxed
                     softmax_output = torch.softmax(output, dim=1)
 
-                    loss = torch.mean(
+                    loss_at_t = torch.mean(
                         # (B, 1)
                         -torch.log(   #(B, H)  (B, H)
                             torch.sum(softmax_output * Y[i], dim=1, keepdim=True) + 1e-9 # notice this is pair-wise multiplication, not matrix dot product, 1e-9 for numerical stability
                         )
                     )
-
-                    epoch_loss += loss.item()
-
-                    self.optimizer.zero_grad()
-
-                    loss.backward()
+                    
+                    batch_cumulative_loss += loss_at_t
+                    epoch_loss += loss_at_t.item()
+                
+                if batch_cumulative_loss != 0:
+                    batch_cumulative_loss.backward()
 
                     # avoiding exploding gradients
                     torch.nn.utils.clip_grad_norm_(self.parameters, max_norm=max_grad_norm)
