@@ -52,9 +52,14 @@ class RNN():
 
         scale_of_weights_init = 0.01
 
-        self.wxh = torch.rand(input_size, hidden_size, requires_grad=True , device=self.device) * scale_of_weights_init
-        self.whh = torch.rand(hidden_size, hidden_size, requires_grad=True, device=self.device) * scale_of_weights_init
-        self.who = torch.rand(hidden_size, output_size, requires_grad=True, device=self.device) * scale_of_weights_init
+        # self.wxh = torch.rand(input_size, hidden_size, requires_grad=True , device=self.device) * scale_of_weights_init
+        # self.whh = torch.rand(hidden_size, hidden_size, requires_grad=True, device=self.device) * scale_of_weights_init
+        # self.who = torch.rand(hidden_size, output_size, requires_grad=True, device=self.device) * scale_of_weights_init
+
+        self.wxh = torch.rand(input_size, hidden_size, requires_grad=True , device=self.device)
+        self.whh = torch.rand(hidden_size, hidden_size, requires_grad=True, device=self.device)
+        self.who = torch.rand(hidden_size, output_size, requires_grad=True, device=self.device)
+
 
         self.bh = torch.rand(hidden_size, requires_grad=True, device=self.device)
         self.bo = torch.rand(output_size, requires_grad=True, device=self.device)
@@ -151,6 +156,7 @@ class RNN():
         
     
     def train(self, sequences, epochs, checkpoints=[], batch_size=1, sub_sequence_length=None, max_grad_norm=5.0):
+        torch.autograd.set_detect_anomaly(True)
         models = []
         for epoch in tqdm(range(epochs), desc="Epochs Finished: ", position=0):
             epoch_loss = 0
@@ -259,12 +265,12 @@ class RNN():
                     
                     # every column of output represnets the logits of prediciion for the subsequence at that column, we softmax these logits
                     # (B, O) shape didn't change, only each column is softmaxed
-                    output = torch.softmax(output, dim=1)
+                    softmax_output = torch.softmax(output, dim=1)
 
                     loss = torch.mean(
                         # (B, 1)
                         -torch.log(   #(B, H)  (B, H)
-                            torch.sum(output * Y[i], dim=1, keepdim=True) + 1e-9 # notice this is pair-wise multiplication, not matrix dot product, 1e-9 for numerical stability
+                            torch.sum(softmax_output * Y[i], dim=1, keepdim=True) + 1e-9 # notice this is pair-wise multiplication, not matrix dot product, 1e-9 for numerical stability
                         )
                     )
 
@@ -272,7 +278,7 @@ class RNN():
 
                     self.optimizer.zero_grad()
 
-                    loss.backward()
+                    loss.backward(retain_graph=True)
 
                     # avoiding exploding gradients
                     torch.nn.utils.clip_grad_norm_(self.parameters, max_norm=max_grad_norm)
