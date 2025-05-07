@@ -1,5 +1,6 @@
 import torch
 from tqdm import tqdm
+import copy
 
 '''
 The following are the shapes for everything
@@ -96,7 +97,8 @@ class RNN():
 
     def sequence_to_hidden(self, sequence, hidden_state=None):
         with torch.no_grad():
-            hidden_state = self.get_fresh_hidden_state(batch_size=1)
+            if hidden_state is None:
+                hidden_state = self.get_fresh_hidden_state(batch_size=1)
 
             for i in range(len(sequence)):
                 # (B, I)
@@ -145,7 +147,7 @@ class RNN():
                 if last_token_index == self.eos:
                     break
             
-            return ''.join([self.index_to_token(index) for index in generated_sequence])
+            return ''.join([self.index_to_token[index] for index in generated_sequence])
         
     
     def train(self, sequences, epochs, checkpoints=[], batch_size=1, sub_sequence_length=None, max_grad_norm=5.0):
@@ -166,24 +168,46 @@ class RNN():
                 # TODO: Prime factorization if batch_size is None to use as much of the training data as possible
 
                 if sub_sequence_length is None:
-                    sub_sequence_length = len(sequence) // batch_size
+                    if batch_size > len(sequence):
+                        sub_sequence_length = len(sequence) # use full
+                    else:
+                        sub_sequence_length = len(sequence) // batch_size
+
+                if sub_sequence_length < 2:
+                    continue
 
                 # the point of the following is to create subsequences with the previously defined length but to ensure they all have the same size, ignore the reminder of the main sequence if you have to
                 # if sequence is [34, 66, 77, 99, 55] and length is 2 then: 
-                stop_range = len(sequence) - sub_sequence_length # this will be 5 - 2 = 3
-                sub_sequences_start_indexes = list(range(0, stop_range, sub_sequence_length)) # this will be [0, 2]
+                # stop_range = len(sequence) - sub_sequence_length # this will be 5 - 2 = 3
+                # sub_sequences_start_indexes = list(range(0, stop_range, sub_sequence_length)) # this will be [0, 2]
                 
                 # TODO: this can be optimized for memroy and time but I'm trying to prevent premature optimization
-                sub_sequences = [sequence[start_index: start_index + sub_sequence_length] for start_index in sub_sequences_start_indexes]
+                # sub_sequences = [sequence[start_index: start_index + sub_sequence_length] for start_index in sub_sequences_start_indexes]
                 # this will be [[34, 66], [77, 99]]
                 # notice how the element 55 was discarded! because the sequence doesn't have enough tokens.
 
-                # --- hidden state init ---
-                # (B, H) shape, basically an (H) shape vector for every sub_sequence :)
-                hidden_state = self.get_fresh_hidden_state(batch_size=batch_size)
+                num_sub_sequences_to_form = len(sequence) // sub_sequence_length
+                
+                if num_sub_sequences_to_form == 0:
+                    # Sequence is too short to form any sub-sequence of the required length.
+                    sub_sequences = []
+                else:
+                    sub_sequences = [
+                        sequence[i * sub_sequence_length : (i + 1) * sub_sequence_length]
+                        for i in range(num_sub_sequences_to_form)
+                    ]
 
                 M = len(sub_sequences)
+
+                if M == 0:
+                    continue
+
+                # --- hidden state init ---
+                # (B, H) shape, basically an (H) shape vector for every sub_sequence :)
+                hidden_state = self.get_fresh_hidden_state(batch_size=M)
+
                 
+
                 # --- getting training X and Y ready ---
                 # Recall how batch_size is simply how many sub-sequences to train at once before calculating loss and gradients and so on
 
@@ -203,7 +227,7 @@ class RNN():
                     we have as many rows as sub-sequence's length because that's how many stpes we have in the training which is also the number of sub-sequence length
                 '''
                 # (S, B, I)
-                X = torch.zeros(sub_sequence_length, batch_size, self.input_size, device=self.device)
+                X = torch.zeros(sub_sequence_length, M, self.input_size, device=self.device)
 
                 '''
                 TODO: fix this description
@@ -213,7 +237,7 @@ class RNN():
 
                     also note that we could have made it of shape (S, B, O) but will make things more complicated for no reason, just keep going in the code and you'll get it :)
                 '''
-                Y = torch.zeros(sub_sequence_length, batch_size, self.output_size, device=self.device)
+                Y = torch.zeros(sub_sequence_length, M, self.output_size, device=self.device)
 
                 # populating x, y with training data
                 for sub_sequence_index, sub_sequence in enumerate(sub_sequences):
@@ -253,12 +277,16 @@ class RNN():
                     # avoiding exploding gradients
                     torch.nn.utils.clip_grad_norm_(self.parameters, max_norm=max_grad_norm)
 
+                    # for param in self.parameters:
+                    #     if param.grad is not None:
+                    #         torch.nn.utils.clip_grad_norm_([param], max_norm=max_grad_norm)
+
                     self.optimizer.step()
             
             print(f"Epoch {epoch + 1} Loss: {epoch_loss / len(sequences)}")
             if epoch + 1 in checkpoints:
-                models.append(self)
+                models.append(copy.deepcopy(self))
                 print(f"Model Saved @ Epoch {epoch + 1}")
         
-        models.append(self)
+        models.append(copy.deepcopy(self))
         return models
