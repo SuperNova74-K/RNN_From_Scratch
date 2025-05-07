@@ -263,6 +263,9 @@ class RNN():
                     # (B, H)      (B, O)
                     hidden_state, output = self.forward(x_t, hidden_state=hidden_state)
                     
+                    # Detach hidden_state to prevent graph reuse
+                    hidden_state = hidden_state.detach()
+
                     # every column of output represnets the logits of prediciion for the subsequence at that column, we softmax these logits
                     # (B, O) shape didn't change, only each column is softmaxed
                     softmax_output = torch.softmax(output, dim=1)
@@ -278,7 +281,7 @@ class RNN():
 
                     self.optimizer.zero_grad()
 
-                    loss.backward(retain_graph=True)
+                    loss.backward()
 
                     # avoiding exploding gradients
                     torch.nn.utils.clip_grad_norm_(self.parameters, max_norm=max_grad_norm)
