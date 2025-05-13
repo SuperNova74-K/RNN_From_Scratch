@@ -1,5 +1,5 @@
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import copy
 
 '''
@@ -75,12 +75,12 @@ class RNN():
         self.parameters = [self.wxh, self.whh, self.who, self.bh, self.bo]
         self.optimizer = torch.optim.AdamW(self.parameters, self.learning_rate)
 
-    def embed(self, index, one_hot=None):
+    def embed(self, index, size, one_hot=None):
         if one_hot is None:
-            one_hot = True
+            one_hot = self.one_hot
         
         if one_hot:
-            embedding = torch.zeros(self.input_size, device=self.device)
+            embedding = torch.zeros(size, device=self.device)
             embedding[index] = 1.0
             return embedding
 
@@ -107,9 +107,9 @@ class RNN():
 
             for i in range(len(sequence)):
                 # (B, I)
-                x = torch.zeros(1, self.input_size)
+                x = torch.zeros(1, self.input_size, device=self.device)
                 
-                x[0] = self.embed(sequence[i])
+                x[0] = self.embed(sequence[i], size=self.input_size)
 
                 # (B, H)      (B, O)
                 hidden_state, output = self.forward(x, hidden_state)
@@ -131,14 +131,14 @@ class RNN():
 
             for i in tqdm(range(max_length), desc="Tokens Generated:"):
                 # (B, I)
-                x = torch.zeros(1, self.input_size)
+                x = torch.zeros(1, self.input_size, device=self.device)
                 
-                x[0] = self.embed(last_token_index)
+                x[0] = self.embed(last_token_index, size=self.input_size)
 
                 # (B, H)      (B, O)
                 hidden_state, output = self.forward(x, hidden_state)
 
-                probabilities = torch.softmax(output[0])
+                probabilities = torch.softmax(output[0], dim=0)
 
                 output_token_index = torch.argmax(probabilities).item()
 
@@ -155,8 +155,31 @@ class RNN():
             return ''.join([self.index_to_token[index] for index in generated_sequence])
         
     
-    def train(self, sequences, epochs, checkpoints=[], batch_size=1, sub_sequence_length=None, max_grad_norm=5.0):
-        torch.autograd.set_detect_anomaly(True)
+    def _optimal_matrix_shape(self, number):
+        '''
+        Returns a tuple of two integers (factor1, factor2) such that:
+        - factor1 * factor2 = number
+        - factor1 <= factor2
+        - Difference between factor1 and factor2 is minimized.
+        - If number is 1, returns (1, 1).
+        '''
+        if number == 1:
+            return (1, 1)
+        
+        start_i = int(number**0.5)
+
+        for i in range(start_i, 0, -1):
+            if number % i == 0:
+                factor1 = i
+                factor2 = number // i
+                # Since i <= sqrt(number), factor1 <= factor2 is guaranteed.
+                # This satisfies "second element in the tuple must be the larger one".
+                return (factor1, factor2)
+        
+        return (1, number) # Should be covered by the loop when i=1.
+
+    def train(self, sequences, epochs, checkpoints=[], batch_size=None,
+              sub_sequence_length=None, max_grad_norm=5.0, fast_mode=False):
         models = []
         for epoch in tqdm(range(epochs), desc="Epochs Finished: ", position=0):
             epoch_loss = 0
@@ -172,6 +195,13 @@ class RNN():
                     #] ... so if sub_sequence_length is not explicitly provided, we just infer it, if it's explicitly provided then we use it and do many batches till the sub-sequences are all finished
                 
                 # TODO: Prime factorization if batch_size is None to use as much of the training data as possible
+
+                if batch_size is None:
+                    shape = self._optimal_matrix_shape(len(sequence))
+                    batch_size = shape[1]
+
+                    if batch_size == len(sequence):
+                        batch_size = len(sequence) // int(len(sequence) ** 0.5)
 
                 if sub_sequence_length is None:
                     if batch_size > len(sequence):
@@ -248,10 +278,10 @@ class RNN():
                 # populating x, y with training data
                 for sub_sequence_index, sub_sequence in enumerate(sub_sequences):
                     for time_step, element in enumerate(sub_sequence):
-                        X[time_step, sub_sequence_index] = self.embed(element)
+                        X[time_step, sub_sequence_index] = self.embed(element, size=self.input_size)
                         
                         if time_step != 0:
-                            Y[time_step - 1][sub_sequence_index] = self.embed(element, one_hot=True)
+                            Y[time_step - 1][sub_sequence_index] = self.embed(element, one_hot=True, size=self.output_size)
 
 
                 self.optimizer.zero_grad()
@@ -295,7 +325,8 @@ class RNN():
 
                     self.optimizer.step()
             
-            print(f"Epoch {epoch + 1} Loss: {epoch_loss / len(sequences)}")
+            if (epoch+1) % 100 == 0:
+                print(f"Epoch {epoch + 1} Loss: {epoch_loss / len(sequences)}")
             if epoch + 1 in checkpoints:
                 models.append(copy.deepcopy(self))
                 print(f"Model Saved @ Epoch {epoch + 1}")
